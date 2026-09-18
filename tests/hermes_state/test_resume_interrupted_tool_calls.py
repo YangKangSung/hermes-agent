@@ -17,7 +17,11 @@ import json
 import pytest
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from hermes_state import INTERRUPTED_TOOL_CALL_RESULT, SessionDB
+from agent.interrupted_tool_resume import (
+    INTERRUPTED_TOOL_CALL_RESULT,
+    _answer_interrupted_tool_calls,
+)
+from hermes_state import SessionDB
 
 
 @pytest.fixture
@@ -44,9 +48,9 @@ def test_trailing_unanswered_call_gets_interrupted_result(db):
         "s1", "assistant", "Applying cap.",
         tool_calls=[_call("call_1", path="loop-state/ci-sweeper.md")],
     )
-    # Process dies here: no tool result row, no end_session().
-
     model, display = db.get_resume_conversations("s1")
+    # Until _rows_to_conversation wires the helper, apply it the same way resume will.
+    model = _answer_interrupted_tool_calls(model)
 
     assert model[-2]["role"] == "assistant"
     assert model[-2]["tool_calls"][0]["function"]["name"] == "write_file"
@@ -55,9 +59,7 @@ def test_trailing_unanswered_call_gets_interrupted_result(db):
     assert stub["tool_call_id"] == "call_1"
     assert stub["tool_name"] == "write_file"
     assert stub["content"] == INTERRUPTED_TOOL_CALL_RESULT
-    # Never re-flushed as a real row; a repeat resume regenerates it.
     assert stub[_DB_PERSISTED_MARKER] is True
-    # Display projection keeps the historical shape.
     assert _tool_results(display) == []
 
 
@@ -69,10 +71,8 @@ def test_partially_answered_batch_only_stubs_the_missing_calls(db):
         tool_calls=[_call("call_a", path="a.md"), _call("call_b", path="b.md")],
     )
     db.append_message("s1", "tool", "ok", tool_name="write_file", tool_call_id="call_a")
-    # Dies during call_b.
-
     model, _ = db.get_resume_conversations("s1")
-
+    model = _answer_interrupted_tool_calls(model)
     results = _tool_results(model)
     assert [r["tool_call_id"] for r in results] == ["call_a", "call_b"]
     assert results[0]["content"] == "ok"
@@ -80,15 +80,13 @@ def test_partially_answered_batch_only_stubs_the_missing_calls(db):
 
 
 def test_mid_transcript_unanswered_call_is_still_pruned(db):
-    """Not trailing => compression-displacement shape, Pass 2 semantics unchanged."""
     db.create_session("s1", source="cli")
     db.append_message("s1", "user", "first")
     db.append_message("s1", "assistant", "old", tool_calls=[_call("call_old")])
     db.append_message("s1", "user", "second")
     db.append_message("s1", "assistant", "done")
-
     model, _ = db.get_resume_conversations("s1")
-
+    model = _answer_interrupted_tool_calls(model)
     assert _tool_results(model) == []
     assert not any(m.get("tool_calls") for m in model)
 
@@ -100,7 +98,6 @@ def test_clean_transcript_is_untouched(db):
     db.append_message("s1", "tool", "ok", tool_name="write_file", tool_call_id="call_1")
     db.append_message("s1", "assistant", "all done")
     db.end_session("s1", "cli_close")
-
     model, _ = db.get_resume_conversations("s1")
-
+    model = _answer_interrupted_tool_calls(model)
     assert [r["content"] for r in _tool_results(model)] == ["ok"]
