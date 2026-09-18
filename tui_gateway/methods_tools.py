@@ -437,8 +437,8 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins'); with no failure it carries the
-    built-in-name collision notice for skills that have no ``/<name>`` (empty when none)."""
+    (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none)."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
@@ -452,7 +452,8 @@ def _(rid, params: dict) -> dict:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
     try:
-        warning = _catalog_skills(cat, skills) or warning
+        collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
+        warning = warning or collision_note
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
